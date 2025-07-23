@@ -12,6 +12,21 @@ from datetime import datetime
 import base64
 import logging
 import warnings
+import os
+from dotenv import load_dotenv
+
+# 환경 변수 로드
+load_dotenv()
+
+def check_environment_setup():
+    """환경 설정 상태 확인"""
+    status = {
+        "claude_api_key": bool(os.getenv("CLAUDE_API_KEY") or st.secrets.get("CLAUDE_API_KEY", "")),
+        "enable_rag": os.getenv("ENABLE_RAG", "true").lower() == "true",
+        "enable_caching": os.getenv("ENABLE_CACHING", "true").lower() == "true",
+        "enable_async": os.getenv("ENABLE_ASYNC", "true").lower() == "true"
+    }
+    return status
 
 # pandas 경고 메시지 억제
 warnings.filterwarnings('ignore', category=FutureWarning)
@@ -381,13 +396,13 @@ def analyze_text_hybrid(text, confidence_threshold=0.7):
 def perform_rag_analysis(text):
     """RAG 분석 수행"""
     try:
-        # Claude API 키 확인
-        claude_api_key = st.secrets.get("CLAUDE_API_KEY", "")
+        # Claude API 키 확인 (환경 변수 우선, 그 다음 Streamlit secrets)
+        claude_api_key = os.getenv("CLAUDE_API_KEY") or st.secrets.get("CLAUDE_API_KEY", "")
         if not claude_api_key:
             return {
                 "risk_level": "unknown",
                 "confidence": 0.0,
-                "reasoning": "Claude API 키가 설정되지 않았습니다.",
+                "reasoning": "Claude API 키가 설정되지 않았습니다. .env 파일 또는 Streamlit secrets에 API 키를 설정해주세요.",
                 "threat_type": "unknown",
                 "recommended_actions": []
             }
@@ -677,6 +692,56 @@ with tab2:
     st.markdown("---")
     st.markdown("#### 🤖 RAG 시스템 설정")
     
+    # API 키 설정
+    st.markdown("**🔑 Claude API 키 설정**")
+    api_key_source = st.radio(
+        "API 키 소스 선택",
+        ["환경 변수 (.env)", "Streamlit Secrets", "직접 입력"],
+        help="API 키를 어디서 가져올지 선택하세요."
+    )
+    
+    if api_key_source == "직접 입력":
+        claude_api_key = st.text_input(
+            "Claude API 키",
+            type="password",
+            help="Anthropic에서 발급받은 API 키를 입력하세요."
+        )
+        if claude_api_key:
+            os.environ["CLAUDE_API_KEY"] = claude_api_key
+            st.success("✅ API 키가 설정되었습니다!")
+    else:
+        current_api_key = os.getenv("CLAUDE_API_KEY") or st.secrets.get("CLAUDE_API_KEY", "")
+        if current_api_key:
+            st.success(f"✅ API 키가 설정되어 있습니다. ({api_key_source})")
+            st.info(f"키 길이: {len(current_api_key)} 문자")
+        else:
+            st.warning(f"⚠️ API 키가 설정되지 않았습니다. ({api_key_source})")
+            
+            # 도움말 표시
+            with st.expander("🔧 API 키 설정 방법"):
+                st.markdown("""
+                ### Claude API 키 설정 방법
+                
+                1. **Anthropic 콘솔에서 API 키 발급**
+                   - https://console.anthropic.com/ 접속
+                   - 계정 생성 후 API 키 발급
+                
+                2. **환경 변수 파일 (.env) 사용 (권장)**
+                   ```bash
+                   # 프로젝트 루트에 .env 파일 생성
+                   CLAUDE_API_KEY=your-api-key-here
+                   ```
+                
+                3. **Streamlit Secrets 사용**
+                   ```toml
+                   # .streamlit/secrets.toml 파일에 추가
+                   CLAUDE_API_KEY = "your-api-key-here"
+                   ```
+                
+                4. **직접 입력**
+                   - 위에서 "직접 입력" 선택 후 API 키 입력
+                """)
+    
     col_c, col_d = st.columns(2)
     
     with col_c:
@@ -745,17 +810,37 @@ with tab2:
     st.markdown("---")
     st.markdown("#### 📋 현재 설정")
     
+    # 환경 설정 상태 확인
+    env_status = check_environment_setup()
+    
     col_g, col_h = st.columns(2)
     
     with col_g:
         st.info(f"**위험도 임계값:** {risk_threshold}")
         st.info(f"**신뢰도 임계값:** {confidence_threshold}")
         st.info(f"**RAG 활성화:** {'예' if enable_rag else '아니오'}")
+        
+        # API 키 상태 표시
+        if env_status["claude_api_key"]:
+            st.success("✅ Claude API 키: 설정됨")
+        else:
+            st.warning("⚠️ Claude API 키: 설정되지 않음")
     
     with col_h:
         st.info(f"**분석 모드:** {analysis_mode}")
         st.info(f"**상세 분석:** {'활성화' if enable_detailed_analysis else '비활성화'}")
         st.info(f"**캐싱:** {'활성화' if enable_caching else '비활성화'}")
+        
+        # 환경 설정 상태 표시
+        if env_status["enable_caching"]:
+            st.success("✅ 캐싱: 활성화됨")
+        else:
+            st.warning("⚠️ 캐싱: 비활성화됨")
+        
+        if env_status["enable_async"]:
+            st.success("✅ 비동기 처리: 활성화됨")
+        else:
+            st.warning("⚠️ 비동기 처리: 비활성화됨")
 
 with tab3:
     st.markdown("### 📊 실시간 분석")

@@ -225,6 +225,36 @@ pip install -r requirements.txt
 
 ### 2️⃣ 환경 변수 설정
 
+#### 방법 1: .env 파일 사용 (권장)
+프로젝트 루트에 `.env` 파일을 생성하고 다음 내용을 추가하세요:
+
+```bash
+# Claude API 키 설정
+# Anthropic에서 발급받은 API 키를 입력하세요
+# https://console.anthropic.com/ 에서 API 키를 발급받을 수 있습니다
+CLAUDE_API_KEY=your-claude-api-key-here
+
+# RAG 시스템 설정
+ENABLE_RAG=true
+RAG_CONFIDENCE_THRESHOLD=0.8
+
+# 캐싱 설정
+ENABLE_CACHING=true
+CACHE_TTL=3600
+
+# 비동기 처리 설정
+ENABLE_ASYNC=true
+
+# 성능 설정
+MAX_CONCURRENT_REQUESTS=10
+REQUEST_TIMEOUT=30
+
+# 로깅 설정
+LOG_LEVEL=INFO
+ENABLE_DEBUG=false
+```
+
+#### 방법 2: Streamlit Secrets 사용
 `.streamlit/secrets.toml` 파일 생성:
 ```toml
 # Claude API 키 설정
@@ -236,6 +266,9 @@ RAG_CONFIDENCE_THRESHOLD = 0.8
 ENABLE_CACHING = true
 ENABLE_ASYNC = true
 ```
+
+#### 방법 3: UI에서 직접 입력
+애플리케이션 실행 후 "분석 설정" 탭에서 직접 API 키를 입력할 수 있습니다.
 
 ### 3️⃣ 실행
 
