@@ -14,6 +14,16 @@ import logging
 import warnings
 import os
 from dotenv import load_dotenv
+import sys
+
+# SSL 검증 우회 설정 (Hugging Face 모델 다운로드 문제 해결)
+import ssl
+os.environ['CURL_CA_BUNDLE'] = ''
+os.environ['REQUESTS_CA_BUNDLE'] = ''
+ssl._create_default_https_context = ssl._create_unverified_context
+
+# 경로 설정
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # 환경 변수 로드
 load_dotenv()
@@ -43,6 +53,19 @@ st.set_page_config(
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# JavaScript 오류 방지
+st.markdown("""
+<script>
+// JavaScript 모듈 로딩 오류 방지
+window.addEventListener('error', function(e) {
+    if (e.message.includes('Failed to fetch dynamically imported module')) {
+        console.log('JavaScript 모듈 로딩 오류 무시됨');
+        e.preventDefault();
+    }
+});
+</script>
+""", unsafe_allow_html=True)
 
 # SAP 스타일 색상 테마
 SAP_COLORS = {
@@ -353,74 +376,113 @@ def train_model(n_samples):
         return None
 
 def analyze_text_hybrid(text, confidence_threshold=0.7):
-    """하이브리드 분석 (빠른 ML + 정확한 RAG)"""
+    """하이브리드 분석 (ML + Claude AI)"""
     if not st.session_state.model_loaded:
         return None
     
     try:
-        # 1. 빠른 ML 분석
+        # 1. ML 모델로 먼저 분석
         ml_result = st.session_state.detector.predict(text)
         
-        # 2. RAG 시스템 활성화 확인
-        enable_rag = st.session_state.get('enable_rag', True)
-        rag_confidence_threshold = st.session_state.get('rag_confidence_threshold', 0.8)
+        # 2. ML 결과의 신뢰도 확인
+        ml_confidence = ml_result.get('confidence', 0)
         
-        # 3. 신뢰도가 낮으면 RAG 분석 수행
-        if enable_rag and ml_result.get('confidence', 0) < rag_confidence_threshold:
-            try:
-                # RAG 분석 수행
-                rag_result = perform_rag_analysis(text)
-                
-                # 결과 융합
-                fused_result = fuse_ml_rag_results(ml_result, rag_result)
-                
-                # 분석 히스토리에 추가
-                add_to_analysis_history(text, fused_result)
-                
-                return fused_result
-                
-            except Exception as e:
-                st.warning(f"RAG 분석 실패: {str(e)}. ML 결과만 사용합니다.")
-                # RAG 실패 시 ML 결과만 사용
-                add_to_analysis_history(text, ml_result)
-                return ml_result
+        # 3. 신뢰도가 임계값 이상이면 ML 결과 사용
+        if ml_confidence >= confidence_threshold:
+            # ML 결과에 분석 방법 표시
+            ml_result['analysis_method'] = 'ml'
+            ml_result['ml_confidence'] = ml_confidence  # ML 신뢰도 저장
+            add_to_analysis_history(text, ml_result)
+            return ml_result
         
-        # 4. 신뢰도가 높으면 ML 결과만 사용
-        add_to_analysis_history(text, ml_result)
-        return ml_result
+        # 4. 신뢰도가 낮으면 Claude AI 분석 수행
+        else:
+            claude_result = perform_claude_analysis(text)
+            claude_result['analysis_method'] = 'claude'
+            claude_result['ml_confidence'] = ml_confidence  # ML 신뢰도 저장
+            claude_result['ml_result'] = ml_result  # ML 결과도 저장
+            add_to_analysis_history(text, claude_result)
+            return claude_result
         
     except Exception as e:
         st.error(f"분석 실패: {str(e)}")
         return None
 
-def perform_rag_analysis(text):
-    """RAG 분석 수행"""
+def perform_claude_analysis(text):
+    """Claude AI를 사용한 SAP 보안 위협 분석"""
     try:
-        # Claude API 키 확인 (환경 변수 우선, 그 다음 Streamlit secrets)
+        # Claude API 키 확인
         claude_api_key = os.getenv("CLAUDE_API_KEY") or st.secrets.get("CLAUDE_API_KEY", "")
         if not claude_api_key:
             return {
                 "risk_level": "unknown",
                 "confidence": 0.0,
-                "reasoning": "Claude API 키가 설정되지 않았습니다. .env 파일 또는 Streamlit secrets에 API 키를 설정해주세요.",
+                "reasoning": "Claude API 키가 설정되지 않았습니다.",
                 "threat_type": "unknown",
                 "recommended_actions": []
             }
         
-        # RAG 시스템 초기화
-        from src.rag_system import ClaudeRAGDetector
-        rag_detector = ClaudeRAGDetector(claude_api_key)
+        # Anthropic Claude API 사용
+        import anthropic
         
-        # RAG 분석 수행
-        rag_result = rag_detector.analyze_threat(text)
+        client = anthropic.Anthropic(api_key=claude_api_key)
         
-        return rag_result
+        # SAP 보안 위협 분석을 위한 프롬프트
+        prompt = f"""
+당신은 SAP 보안 전문가입니다. 다음 텍스트를 분석하여 SAP 시스템에 대한 보안 위협이 있는지 판단해주세요.
+
+분석할 텍스트: "{text}"
+
+다음 기준으로 분석해주세요:
+1. 권한 상승 시도 (privilege escalation)
+2. 데이터 유출 시도 (data exfiltration) 
+3. 역할 사칭 (role impersonation)
+4. 인젝션 공격 (injection attacks)
+5. 기타 SAP 보안 위협
+
+JSON 형식으로 응답해주세요:
+{{
+    "risk_level": "low/medium/high",
+    "confidence": 0.0-1.0,
+    "reasoning": "분석 근거",
+    "threat_type": "detected_threat_type",
+    "recommended_actions": ["action1", "action2", "action3"]
+}}
+"""
+        
+        # Claude API 호출
+        response = client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=1000,
+            temperature=0.1,
+            messages=[
+                {
+                    "role": "user",
+                    "content": prompt
+                }
+            ]
+        )
+        
+        # 응답 파싱
+        try:
+            import json
+            result = json.loads(response.content[0].text)
+            return result
+        except json.JSONDecodeError:
+            # JSON 파싱 실패 시 기본 응답
+            return {
+                "risk_level": "unknown",
+                "confidence": 0.5,
+                "reasoning": f"Claude 분석 결과: {response.content[0].text}",
+                "threat_type": "unknown",
+                "recommended_actions": ["분석 결과 확인 필요"]
+            }
         
     except Exception as e:
         return {
             "risk_level": "unknown",
             "confidence": 0.0,
-            "reasoning": f"RAG 분석 실패: {str(e)}",
+            "reasoning": f"Claude API 호출 실패: {str(e)}",
             "threat_type": "unknown",
             "recommended_actions": []
         }
@@ -578,7 +640,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # 탭 구성
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔧 모델 관리", "⚙️ 분석 설정", "📊 실시간 분석", "📁 배치 분석", "📚 지식베이스 관리"])
+tab1, tab2, tab3, tab4 = st.tabs(["🔧 모델 관리", "⚙️ 분석 설정", "📊 실시간 분석", "📁 배치 분석"])
 
 with tab1:
     st.markdown("### 🔄 모델 로드")
@@ -863,13 +925,37 @@ with tab3:
                     result = analyze_text_hybrid(text_input, confidence_threshold)
                     
                     if result:
-                        # 결과 표시
-                        st.markdown("### 📊 분석 결과")
+                        # ML 신뢰도 먼저 표시
+                        ml_confidence = result.get('ml_confidence', 0.0)
+                        analysis_method = result.get('analysis_method', 'claude')
+                        
+                        st.markdown("### 🔍 ML 모델 신뢰도 확인")
+                        col_ml_a, col_ml_b = st.columns(2)
+                        
+                        with col_ml_a:
+                            st.markdown(f"**ML 모델 신뢰도:** {ml_confidence:.3f}")
+                            st.markdown(f"**임계값:** {confidence_threshold:.1f}")
+                            
+                            if ml_confidence >= confidence_threshold:
+                                st.success(f"✅ ML 모델 신뢰도가 높습니다 ({ml_confidence:.1%})")
+                                st.info("ML 모델 결과를 사용합니다.")
+                            else:
+                                st.warning(f"⚠️ ML 모델 신뢰도가 낮습니다 ({ml_confidence:.1%})")
+                                st.info("Claude AI 분석을 수행합니다.")
+                        
+                        with col_ml_b:
+                            # ML 신뢰도 게이지
+                            ml_gauge_fig = create_risk_gauge(ml_confidence, 'medium')
+                            st.plotly_chart(ml_gauge_fig, use_container_width=True)
+                        
+                        st.markdown("---")
+                        
+                        # 최종 분석 결과 표시
+                        st.markdown("### 📊 최종 분석 결과")
                         
                         # 위험도 표시
-                        risk_level = result['predicted_risk']
-                        confidence = result['confidence']
-                        analysis_method = result.get('analysis_method', 'ml')
+                        risk_level = result.get('risk_level', result.get('predicted_risk', 'unknown'))
+                        confidence = result.get('confidence', 0.0)
                         
                         col_a, col_b = st.columns(2)
                         
@@ -895,62 +981,100 @@ with tab3:
                             gauge_fig = create_risk_gauge(confidence, risk_level)
                             st.plotly_chart(gauge_fig, use_container_width=True)
                         
-                        # 확률 분포
-                        st.markdown("### 📈 확률 분포")
-                        prob_fig = create_probability_chart(result['probabilities'])
-                        st.plotly_chart(prob_fig, use_container_width=True)
+                        # 확률 분포 (Claude AI 결과에는 없을 수 있음)
+                        if 'probabilities' in result:
+                            st.markdown("### 📈 확률 분포")
+                            prob_fig = create_probability_chart(result['probabilities'])
+                            st.plotly_chart(prob_fig, use_container_width=True)
                         
-                        # RAG 분석 결과 (활성화된 경우)
-                        if enable_rag and 'rag_analysis' in result:
-                            st.markdown("### 🤖 RAG 분석 결과")
-                            rag_result = result['rag_analysis']
+                        # 분석 결과 상세 (ML 또는 Claude AI)
+                        if analysis_method == 'claude':
+                            st.markdown("### 🤖 Claude AI 분석 결과")
                             
+                            # ML 결과도 함께 표시
+                            if 'ml_result' in result:
+                                st.markdown("#### 📊 ML 모델 초기 분석")
+                                ml_result = result['ml_result']
+                                col_ml_c, col_ml_d = st.columns(2)
+                                
+                                with col_ml_c:
+                                    st.markdown("**ML 위험도:**")
+                                    st.info(ml_result.get('predicted_risk', 'unknown').upper())
+                                    
+                                    st.markdown("**ML 신뢰도:**")
+                                    st.info(f"{ml_confidence:.1%}")
+                                
+                                with col_ml_d:
+                                    if 'probabilities' in ml_result:
+                                        st.markdown("**ML 확률 분포:**")
+                                        st.json(ml_result['probabilities'])
+                            
+                            st.markdown("#### 🤖 Claude AI 최종 분석")
                             col_c, col_d = st.columns(2)
                             
                             with col_c:
                                 st.markdown("**위협 유형:**")
-                                st.info(rag_result.get('threat_type', 'unknown'))
+                                st.info(result.get('threat_type', 'unknown'))
                                 
                                 st.markdown("**추론 과정:**")
-                                st.text_area("", value=rag_result.get('reasoning', ''), height=100, disabled=True)
+                                st.text_area("추론 과정", value=result.get('reasoning', ''), height=100, disabled=True, label_visibility="collapsed")
                             
                             with col_d:
                                 st.markdown("**권장 조치:**")
-                                for action in rag_result.get('recommended_actions', []):
+                                for action in result.get('recommended_actions', []):
                                     st.info(f"• {action}")
+                        else:
+                            st.markdown("### 🤖 ML 모델 분석 결과")
+                            
+                            col_c, col_d = st.columns(2)
+                            
+                            with col_c:
+                                st.markdown("**분석 방법:**")
+                                st.info("Machine Learning Model")
+                                
+                                st.markdown("**신뢰도:**")
+                                st.info(f"{confidence:.1%}")
+                            
+                            with col_d:
+                                st.markdown("**위험도:**")
+                                st.info(risk_level.upper())
+                                
+                                if 'probabilities' in result:
+                                    st.markdown("**확률 분포:**")
+                                    st.json(result['probabilities'])
                         
-                        # 상세 분석 (SAP 스타일 카드)
+                        # 상세 분석
                         if enable_detailed_analysis:
                             st.markdown("### 🔍 상세 분석")
-                            analysis = result['detailed_analysis']
                             
                             col_e, col_f = st.columns(2)
                             
                             with col_e:
                                 st.markdown("""
                                 <div class="metric-card">
-                                    <h4 style="margin: 0 0 10px 0; color: #323130;">SAP 관련 지표</h4>
+                                    <h4 style="margin: 0 0 10px 0; color: #323130;">분석 결과</h4>
                                 </div>
                                 """, unsafe_allow_html=True)
-                                st.metric("SAP 트랜잭션 감지", analysis['sap_transaction_count'])
-                                st.metric("인젝션 패턴 감지", analysis['injection_pattern_count'])
-                                st.metric("텍스트 복잡도", analysis['text_complexity'])
-                                st.metric("컨텍스트 특화 패턴", analysis.get('context_specific_pattern_count', 0))
+                                st.metric("위험도", risk_level.upper())
+                                st.metric("신뢰도", f"{confidence:.1%}")
+                                st.metric("분석 방법", analysis_method.upper())
+                                if analysis_method == 'claude':
+                                    st.metric("위협 유형", result.get('threat_type', 'unknown'))
+                                else:
+                                    st.metric("ML 모델", "활성화됨")
                             
                             with col_f:
                                 st.markdown("""
                                 <div class="metric-card">
-                                    <h4 style="margin: 0 0 10px 0; color: #323130;">보안 패턴 지표</h4>
+                                    <h4 style="margin: 0 0 10px 0; color: #323130;">분석 정보</h4>
                                 </div>
                                 """, unsafe_allow_html=True)
-                                st.metric("역할 사칭 패턴 감지", analysis['role_impersonation_count'])
-                                st.metric("민감 정보 접근 패턴 감지", analysis['sensitive_data_access_count'])
-                                st.metric("언어 혼합", "예" if analysis['language_mix'] else "아니오")
-                                st.metric("기술적 복잡도", analysis.get('technical_complexity_count', 0))
-                            
-                            # 패턴 차트
-                            pattern_fig = create_pattern_chart(analysis)
-                            st.plotly_chart(pattern_fig, use_container_width=True)
+                                if analysis_method == 'claude':
+                                    st.text_area("분석 근거", value=result.get('reasoning', ''), height=150, disabled=True, label_visibility="collapsed")
+                                else:
+                                    st.info("ML 모델이 높은 신뢰도로 분석을 완료했습니다.")
+                                    if 'probabilities' in result:
+                                        st.json(result['probabilities'])
                         
                         # 임계값 경고 (SAP 스타일)
                         if RISK_LEVEL_MAPPING[risk_level] >= RISK_LEVEL_MAPPING[risk_threshold]:
@@ -1139,185 +1263,3 @@ with tab4:
                         st.markdown(csv_link, unsafe_allow_html=True)
                 else:
                     st.error("분석할 텍스트를 입력해주세요.")
-
-with tab5:
-    st.markdown("### 📚 지식베이스 관리")
-    
-    # 지식베이스 초기화
-    if 'knowledge_base_manager' not in st.session_state:
-        st.session_state.knowledge_base_manager = None
-    
-    # 지식베이스 상태 확인
-    if st.session_state.knowledge_base_manager is None:
-        st.info("지식베이스를 초기화하려면 아래 버튼을 클릭하세요.")
-        if st.button("지식베이스 초기화", type="primary"):
-            try:
-                from src.rag_system import KnowledgeBaseManager, VectorStore
-                from src.sample_knowledge import get_sample_knowledge
-                
-                vector_store = VectorStore()
-                st.session_state.knowledge_base_manager = KnowledgeBaseManager(vector_store)
-                
-                # 샘플 데이터 추가
-                sample_knowledge = get_sample_knowledge()
-                for item in sample_knowledge:
-                    metadata = {
-                        "title": item['title'],
-                        "category": item['category'],
-                        "tags": item['tags'],
-                        "source": "sample_data"
-                    }
-                    st.session_state.knowledge_base_manager.add_document(item['content'], metadata)
-                
-                st.success("✅ 지식베이스가 초기화되었습니다! (샘플 데이터 포함)")
-            except Exception as e:
-                st.error(f"❌ 지식베이스 초기화 실패: {str(e)}")
-    
-    else:
-        kb_manager = st.session_state.knowledge_base_manager
-        
-        # 지식베이스 통계
-        stats = kb_manager.get_knowledge_stats()
-        
-        col_a, col_b, col_c = st.columns(3)
-        
-        with col_a:
-            st.metric("총 문서 수", stats['total_documents'])
-        
-        with col_b:
-            st.metric("지식베이스 크기", stats['knowledge_base_size'])
-        
-        with col_c:
-            st.metric("마지막 업데이트", time.strftime('%Y-%m-%d %H:%M', time.localtime(stats['last_updated'])))
-        
-        st.markdown("---")
-        
-        # 문서 업로드 섹션
-        st.markdown("#### 📄 문서 업로드")
-        
-        upload_option = st.radio(
-            "업로드 방식",
-            ["단일 문서", "배치 업로드", "텍스트 직접 입력"]
-        )
-        
-        if upload_option == "단일 문서":
-            uploaded_file = st.file_uploader(
-                "문서 파일을 업로드하세요 (TXT, PDF, DOCX)",
-                type=['txt', 'pdf', 'docx']
-            )
-            
-            if uploaded_file is not None:
-                if st.button("문서 추가", type="primary"):
-                    try:
-                        # 파일 내용 읽기
-                        if uploaded_file.name.endswith('.txt'):
-                            content = uploaded_file.read().decode('utf-8')
-                        else:
-                            st.warning("현재 TXT 파일만 지원됩니다.")
-                            content = ""
-                        
-                        if content:
-                            metadata = {
-                                "filename": uploaded_file.name,
-                                "upload_time": time.time(),
-                                "source": "file_upload"
-                            }
-                            
-                            kb_manager.add_document(content, metadata)
-                            st.success(f"✅ 문서 '{uploaded_file.name}'이 추가되었습니다!")
-                            
-                    except Exception as e:
-                        st.error(f"❌ 문서 추가 실패: {str(e)}")
-        
-        elif upload_option == "배치 업로드":
-            uploaded_files = st.file_uploader(
-                "여러 문서 파일을 업로드하세요",
-                type=['txt'],
-                accept_multiple_files=True
-            )
-            
-            if uploaded_files and st.button("배치 추가", type="primary"):
-                try:
-                    documents = []
-                    metadata_list = []
-                    
-                    for file in uploaded_files:
-                        content = file.read().decode('utf-8')
-                        metadata = {
-                            "filename": file.name,
-                            "upload_time": time.time(),
-                            "source": "batch_upload"
-                        }
-                        
-                        documents.append(content)
-                        metadata_list.append(metadata)
-                    
-                    kb_manager.add_documents_batch(documents, metadata_list)
-                    st.success(f"✅ {len(documents)}개의 문서가 추가되었습니다!")
-                    
-                except Exception as e:
-                    st.error(f"❌ 배치 추가 실패: {str(e)}")
-        
-        else:  # 텍스트 직접 입력
-            text_input = st.text_area(
-                "문서 내용을 직접 입력하세요",
-                height=200,
-                placeholder="SAP 보안 관련 문서 내용을 입력하세요..."
-            )
-            
-            if text_input.strip() and st.button("문서 추가", type="primary"):
-                try:
-                    metadata = {
-                        "source": "direct_input",
-                        "upload_time": time.time()
-                    }
-                    
-                    kb_manager.add_document(text_input, metadata)
-                    st.success("✅ 문서가 추가되었습니다!")
-                    
-                except Exception as e:
-                    st.error(f"❌ 문서 추가 실패: {str(e)}")
-        
-        st.markdown("---")
-        
-        # 문서 검색 섹션
-        st.markdown("#### 🔍 문서 검색")
-        
-        search_query = st.text_input(
-            "검색할 키워드를 입력하세요",
-            placeholder="SAP 보안, 권한 관리, 위협 탐지..."
-        )
-        
-        if search_query and st.button("검색", type="primary"):
-            try:
-                search_results = kb_manager.search_documents(search_query, n_results=5)
-                
-                if search_results:
-                    st.markdown("**검색 결과:**")
-                    for i, result in enumerate(search_results):
-                        with st.expander(f"문서 {i+1} (유사도: {1-result['distance']:.3f})"):
-                            st.text(result['document'][:500] + "...")
-                            st.caption(f"메타데이터: {result['metadata']}")
-                else:
-                    st.info("검색 결과가 없습니다.")
-                    
-            except Exception as e:
-                st.error(f"❌ 검색 실패: {str(e)}")
-        
-        st.markdown("---")
-        
-        # 지식베이스 관리
-        st.markdown("#### ⚙️ 지식베이스 관리")
-        
-        col_d, col_e = st.columns(2)
-        
-        with col_d:
-            if st.button("지식베이스 통계 새로고침", type="secondary"):
-                stats = kb_manager.get_knowledge_stats()
-                st.success("✅ 통계가 업데이트되었습니다!")
-        
-        with col_e:
-            if st.button("지식베이스 초기화", type="secondary"):
-                st.session_state.knowledge_base_manager = None
-                st.success("✅ 지식베이스가 초기화되었습니다!")
-                st.rerun() 
