@@ -15,7 +15,6 @@ import warnings
 import os
 from dotenv import load_dotenv
 import sys
-
 # SSL 검증 우회 설정 (Hugging Face 모델 다운로드 문제 해결)
 import ssl
 os.environ['CURL_CA_BUNDLE'] = ''
@@ -27,6 +26,8 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 # 환경 변수 로드
 load_dotenv()
+
+
 
 def check_environment_setup():
     """환경 설정 상태 확인"""
@@ -422,32 +423,93 @@ def perform_claude_analysis(text):
                 "recommended_actions": []
             }
         
+
+        
         # Anthropic Claude API 사용
         import anthropic
         
         client = anthropic.Anthropic(api_key=claude_api_key)
         
-        # SAP 보안 위협 분석을 위한 프롬프트
+        # SAP 보안 위협 분석을 위한 체계적인 프롬프트 템플릿
         prompt = f"""
-당신은 SAP 보안 전문가입니다. 다음 텍스트를 분석하여 SAP 시스템에 대한 보안 위협이 있는지 판단해주세요.
+당신은 SAP 보안 전문가입니다. 다음 텍스트를 체계적으로 분석하여 SAP 시스템에 대한 보안 위협을 식별해주세요.
 
-분석할 텍스트: "{text}"
+## 📋 분석 대상 텍스트
+"{text}"
 
-다음 기준으로 분석해주세요:
-1. 권한 상승 시도 (privilege escalation)
-2. 데이터 유출 시도 (data exfiltration) 
-3. 역할 사칭 (role impersonation)
-4. 인젝션 공격 (injection attacks)
-5. 기타 SAP 보안 위협
+## 🔍 분석 기준 및 위협 유형
 
-JSON 형식으로 응답해주세요:
+### 1. 권한 관리 위협 (Authorization Threats)
+- **권한 상승 시도**: SU01, PFCG, SU24 등 권한 관련 트랜잭션 무단 사용
+- **역할 사칭**: 관리자 역할 또는 특별 권한을 가진 사용자 사칭
+- **권한 우회**: 권한 검증을 우회하는 방법 시도
+
+### 2. 데이터 보안 위협 (Data Security Threats)
+- **민감 데이터 접근**: PA0001, PA0008 등 인사 데이터 무단 접근
+- **데이터 유출 시도**: 대량 데이터 추출, 백업 파일 생성
+- **개인정보 노출**: 급여, 연봉, 개인정보 등 민감정보 접근
+
+### 3. 시스템 보안 위협 (System Security Threats)
+- **인젝션 공격**: SQL 인젝션, 명령어 인젝션
+- **시스템 설정 변경**: SPRO, SM30 등 시스템 설정 무단 변경
+- **디버그 모드 악용**: SE80, SE37 등 개발 도구 무단 사용
+
+### 4. 네트워크 보안 위협 (Network Security Threats)
+- **무단 접근**: 인증되지 않은 사용자의 시스템 접근
+- **세션 하이재킹**: 사용자 세션 탈취 시도
+- **통신 암호화 우회**: 보안 통신 우회 시도
+
+### 5. 내부 통제 우회 (Internal Control Bypass)
+- **승인 프로세스 우회**: 승인 없이 거래 처리
+- **감사 추적 우회**: 감사 로그 생성 방지
+- **분리 업무 원칙 위반**: 권한 분리 원칙 위반
+
+## 📊 위험도 평가 기준
+
+### Low (낮음)
+- 일반적인 조회 작업
+- 기본적인 사용자 기능 사용
+- 위협 요소 없음
+
+### Medium (보통)
+- 시스템 설정 조회
+- 일부 민감 정보 접근
+- 경미한 보안 위협
+
+### High (높음)
+- 권한 상승 시도
+- 민감 데이터 대량 접근
+- 시스템 설정 변경 시도
+
+### Critical (치명적)
+- 관리자 권한 탈취 시도
+- 대규모 데이터 유출
+- 시스템 무력화 시도
+
+## 🎯 분석 요구사항
+
+다음 JSON 형식으로 정확히 응답해주세요:
+
 {{
-    "risk_level": "low/medium/high",
+    "risk_level": "low|medium|high|critical",
     "confidence": 0.0-1.0,
-    "reasoning": "분석 근거",
-    "threat_type": "detected_threat_type",
-    "recommended_actions": ["action1", "action2", "action3"]
+    "reasoning": "상세한 분석 근거와 위협 식별 과정",
+    "threat_type": ["위협유형1", "위협유형2"],
+    "recommended_actions": [
+        "즉시 조치사항1",
+        "단기 조치사항2", 
+        "장기 조치사항3"
+    ],
+    "sap_transactions": ["관련된 SAP 트랜잭션 코드들"],
+    "affected_tables": ["영향받는 SAP 테이블들"],
+    "user_roles": ["관련된 사용자 역할들"]
 }}
+
+## ⚠️ 중요 사항
+- 위험도는 가장 높은 위협 기준으로 판단
+- 신뢰도는 분석 근거의 확실성에 따라 0.0-1.0으로 평가
+- 위협 유형은 복수 가능 (배열 형태)
+- 권장 조치는 구체적이고 실행 가능한 내용으로 작성
 """
         
         # Claude API 호출
@@ -954,8 +1016,19 @@ with tab3:
                         st.markdown("### 📊 최종 분석 결과")
                         
                         # 위험도 표시
-                        risk_level = result.get('risk_level', result.get('predicted_risk', 'unknown'))
+                        # 위험도 추출 및 유효성 검증
+                        raw_risk_level = result.get('risk_level', result.get('predicted_risk', 'unknown'))
+                        
+                        # 유효한 위험도 값인지 확인
+                        valid_risk_levels = ['low', 'medium', 'high', 'critical']
+                        if raw_risk_level in valid_risk_levels:
+                            risk_level = raw_risk_level
+                        else:
+                            # 유효하지 않은 경우 기본값 설정
+                            risk_level = 'medium'  # 기본값으로 medium 사용
+                        
                         confidence = result.get('confidence', 0.0)
+                        
                         
                         col_a, col_b = st.columns(2)
                         
@@ -1014,7 +1087,11 @@ with tab3:
                             
                             with col_c:
                                 st.markdown("**위협 유형:**")
-                                st.info(result.get('threat_type', 'unknown'))
+                                threat_type = result.get('threat_type', 'unknown')
+                                # 리스트인 경우 문자열로 변환
+                                if isinstance(threat_type, list):
+                                    threat_type = ', '.join(threat_type)
+                                st.info(threat_type)
                                 
                                 st.markdown("**추론 과정:**")
                                 st.text_area("추론 과정", value=result.get('reasoning', ''), height=100, disabled=True, label_visibility="collapsed")
@@ -1023,6 +1100,28 @@ with tab3:
                                 st.markdown("**권장 조치:**")
                                 for action in result.get('recommended_actions', []):
                                     st.info(f"• {action}")
+                            
+                            # 추가 분석 정보 표시
+                            if any(key in result for key in ['sap_transactions', 'affected_tables', 'user_roles']):
+                                st.markdown("#### 🔍 추가 분석 정보")
+                                col_e, col_f = st.columns(2)
+                                
+                                with col_e:
+                                    if 'sap_transactions' in result and result['sap_transactions']:
+                                        st.markdown("**관련 SAP 트랜잭션:**")
+                                        for tx in result['sap_transactions']:
+                                            st.code(tx, language="text")
+                                    
+                                    if 'affected_tables' in result and result['affected_tables']:
+                                        st.markdown("**영향받는 테이블:**")
+                                        for table in result['affected_tables']:
+                                            st.code(table, language="text")
+                                
+                                with col_f:
+                                    if 'user_roles' in result and result['user_roles']:
+                                        st.markdown("**관련 사용자 역할:**")
+                                        for role in result['user_roles']:
+                                            st.code(role, language="text")
                         else:
                             st.markdown("### 🤖 ML 모델 분석 결과")
                             
@@ -1059,7 +1158,11 @@ with tab3:
                                 st.metric("신뢰도", f"{confidence:.1%}")
                                 st.metric("분석 방법", analysis_method.upper())
                                 if analysis_method == 'claude':
-                                    st.metric("위협 유형", result.get('threat_type', 'unknown'))
+                                    threat_type = result.get('threat_type', 'unknown')
+                                    # 리스트인 경우 문자열로 변환
+                                    if isinstance(threat_type, list):
+                                        threat_type = ', '.join(threat_type)
+                                    st.metric("위협 유형", threat_type)
                                 else:
                                     st.metric("ML 모델", "활성화됨")
                             
@@ -1071,6 +1174,16 @@ with tab3:
                                 """, unsafe_allow_html=True)
                                 if analysis_method == 'claude':
                                     st.text_area("분석 근거", value=result.get('reasoning', ''), height=150, disabled=True, label_visibility="collapsed")
+                                    
+                                    # 추가 분석 정보 (상세 분석에서도 표시)
+                                    if any(key in result for key in ['sap_transactions', 'affected_tables', 'user_roles']):
+                                        st.markdown("**🔍 추가 정보:**")
+                                        if 'sap_transactions' in result and result['sap_transactions']:
+                                            st.markdown("**SAP 트랜잭션:** " + ", ".join(result['sap_transactions']))
+                                        if 'affected_tables' in result and result['affected_tables']:
+                                            st.markdown("**영향 테이블:** " + ", ".join(result['affected_tables']))
+                                        if 'user_roles' in result and result['user_roles']:
+                                            st.markdown("**사용자 역할:** " + ", ".join(result['user_roles']))
                                 else:
                                     st.info("ML 모델이 높은 신뢰도로 분석을 완료했습니다.")
                                     if 'probabilities' in result:
